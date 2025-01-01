@@ -1,116 +1,39 @@
-from flask import Flask, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
-from flask_bcrypt import Bcrypt
-import random
+import asyncio
+import json
 
-app = Flask(__name__)
+from aiogram import types
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.context import FSMContext
+from aiogram.filters.command import Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 
-# Ma'lumotlar bazasi sozlamalari
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///password_manager.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-bcrypt = Bcrypt(app)
+bot = Bot(token = "7722907926:AAHe9pfBs74AbiC49nPpx8IcS9NpJ-vC-ew")
+dp = Dispatcher()
 
-# Ma'lumotlar bazasi modellari
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    phone_number = db.Column(db.String(15), unique=True, nullable=False)
-    otp = db.Column(db.String(6), nullable=True)
-    passwords = db.relationship('Password', backref='user', lazy=True)
+@dp.message (Command('start'))
+async def start(message: types.Message, state: FSMContext):
+    item1 = KeyboardButton (text="Vybrat product", web_app=WebAppInfo (url='https://174a-213-230-102-203.ngrok-free.app'))
+    keyboard=ReplyKeyboardMarkup (keyboard=[[item1]], resize_keyboard=True)
+    await bot.send_message(message.from_user.id, "Dobro pojalovat v *Burger Food Is Good",reply_markup = keyboard, parse_mode="Markdown")
 
-class Password(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    site_name = db.Column(db.String(255), nullable=False)
-    site_password = db.Column(db.String(255), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+@dp.message()
+async def web_app(callback_query):
+    json_data = callback_query.web_app_data.data
+    parsed_data = json.loads(json_data)
+    message = ""
+    for i, item in enumerate(parsed_data['items'], start = 1):
+        position = int(item['id'].replace('item',''))
+        message += f"Position{position}\n"
+        message += f"Price:{item['price']}\n\n"
 
-# Ma'lumotlar bazasini yaratish
-with app.app_context():
-    db.create_all()
+    message += f"Total price: {parsed_data['totalPrice']}"
 
-# 1. Telefon raqam yuborish
-@app.route('/send_otp', methods=['POST'])
-def send_otp():
-    data = request.json
-    phone_number = data.get('phone_number')
-    if not phone_number:
-        return jsonify({'error': 'Telefon raqamni kiriting'}), 400
+    await bot.send_message(callback_query.from_user.id, f"""
+    {message}
+    """)
+    await bot.send_message('-1002063166054', f"""New Order{message}""")
 
-    otp = str(random.randint(100000, 999999))
-    user = User.query.filter_by(phone_number=phone_number).first()
-    if user:
-        user.otp = otp
-    else:
-        user = User(phone_number=phone_number, otp=otp)
-        db.session.add(user)
-    db.session.commit()
-
-    # Foydalanuvchiga OTP yuborish qismi (SMS API bilan integratsiya qiling)
-    print(f"OTP yuborildi: {otp}")
-    return jsonify({'message': 'OTP yuborildi'}), 200
-
-# 2. OTP ni tekshirish
-@app.route('/verify_otp', methods=['POST'])
-def verify_otp():
-    data = request.json
-    phone_number = data.get('phone_number')
-    otp = data.get('otp')
-
-    user = User.query.filter_by(phone_number=phone_number).first()
-    if not user or user.otp != otp:
-        return jsonify({'error': 'OTP noto‘g‘ri'}), 400
-
-    user.otp = None  # OTP ni bir martalik qilib o'chirib tashlaymiz
-    db.session.commit()
-    return jsonify({'message': 'OTP tasdiqlandi'}), 200
-
-# 3. Parol qo'shish
-@app.route('/add_password', methods=['POST'])
-def add_password():
-    data = request.json
-    phone_number = data.get('phone_number')
-    site_name = data.get('site_name')
-    site_password = data.get('site_password')
-
-    if not all([phone_number, site_name, site_password]):
-        return jsonify({'error': 'Hamma maydonlarni to‘ldiring'}), 400
-
-    user = User.query.filter_by(phone_number=phone_number).first()
-    if not user:
-        return jsonify({'error': 'Foydalanuvchi topilmadi'}), 404
-
-    hashed_password = bcrypt.generate_password_hash(site_password).decode('utf-8')
-    new_password = Password(site_name=site_name, site_password=hashed_password, user_id=user.id)
-    db.session.add(new_password)
-    db.session.commit()
-    return jsonify({'message': 'Parol saqlandi'}), 200
-
-# 4. Parollarni ko‘rish
-@app.route('/see_passwords', methods=['GET'])
-def see_passwords():
-    phone_number = request.args.get('phone_number')
-    user = User.query.filter_by(phone_number=phone_number).first()
-
-    if not user:
-        return jsonify({'error': 'Foydalanuvchi topilmadi'}), 404
-
-    passwords = Password.query.filter_by(user_id=user.id).all()
-    password_list = [{'site_name': p.site_name, 'site_password': p.site_password} for p in passwords]
-    return jsonify({'passwords': password_list}), 200
-
-# 5. Parolni qidirish
-@app.route('/search_password', methods=['GET'])
-def search_password():
-    phone_number = request.args.get('phone_number')
-    search_query = request.args.get('query')
-    user = User.query.filter_by(phone_number=phone_number).first()
-
-    if not user:
-        return jsonify({'error': 'Foydalanuvchi topilmadi'}), 404
-
-    passwords = Password.query.filter(Password.user_id == user.id, Password.site_name.like(f'%{search_query}%')).all()
-    password_list = [{'site_name': p.site_name, 'site_password': p.site_password} for p in passwords]
-    return jsonify({'passwords': password_list}), 200
-
-if __name__ == '__main__':
-    app.run(debug=True)
+async def main():
+    await dp.start_polling(bot)
+if __name__ == "_main__":
+    asyncio.run(main())
